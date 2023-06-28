@@ -1,2 +1,2 @@
 # premium-rs
-Rust version of premium calculation originally written in Go
+Rust version of [premium calculation](https://github.com/kubesure/premium) originally written in Go
