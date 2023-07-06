@@ -1,12 +1,10 @@
 use log::info;
 use serde::{Deserialize, Serialize};
-use tide::{Body, Request, Response, StatusCode};
-//use validator::{Validate, ValidationError, ValidationErrorsKind};
+use tide::{Body, Error, Request, Response, StatusCode};
 
 #[derive(Debug, Deserialize)]
 struct HealthRequest {
     code: String,
-    //#[validate(length(min = 1, message = "sum insured is required"))]
     #[serde(rename = "sumInsured")]
     sum_insured: String,
     #[serde(rename = "dateOfBirth")]
@@ -39,12 +37,29 @@ async fn main() -> tide::Result<()> {
     Ok(())
 }
 
-async fn premiums(mut req: Request<()>) -> tide::Result {
-    handle_request(&req).await?;
-    let str_data = req.body_string().await?;
-    let health_req: HealthRequest = serde_json::from_str(&str_data).map_err(handle_serde_error)?;
+async fn health(_req: Request<()>) -> tide::Result {
+    let response = Response::new(StatusCode::Ok);
+    Ok(response)
+}
 
-    info!("{:?}", health_req);
+async fn premiums(mut req: Request<()>) -> tide::Result {
+    handle_content_type_error(&req).await?;
+    let input = req.body_string().await?;
+    let result = serde_json::from_str::<HealthRequest>(input.as_str());
+
+    match result {
+        Ok(data) => {
+            info!("{:?}", data);
+            Ok(process_response(data).await)
+        }
+        Err(err) => {
+            info!("{:?}", err);
+            Ok(Response::new(tide::StatusCode::InternalServerError))
+        }
+    }
+}
+
+async fn process_response(input: HealthRequest) -> Response {
     let response = HealthResponse {
         premium: "250".to_string(),
     };
@@ -55,45 +70,29 @@ async fn premiums(mut req: Request<()>) -> tide::Result {
             println!("{:?}", response);
             let mut response = Response::new(StatusCode::Ok);
             response.set_body(data);
-            Ok(response)
+            response
         }
         Err(err) => {
             info!("Error while converting response {:?}", err);
-            Ok(tide::Response::new(tide::StatusCode::InternalServerError))
+            Response::new(tide::StatusCode::InternalServerError)
         }
     }
 }
 
-async fn handle_request(request: &Request<()>) -> tide::Result {
+async fn handle_content_type_error(request: &Request<()>) -> tide::Result {
     let content_type = request.header("Content-Type").map(|header| header.as_str());
     match content_type {
         Some("application/json") => Ok(Response::new(StatusCode::Ok)),
-        _ => Err(handle_request_error("content type not application/json")),
+        _ => Err(handle_request_error(
+            "001",
+            "content type not application/json".to_string(),
+        )),
     }
 }
 
-async fn health(_req: Request<()>) -> tide::Result {
-    let response = Response::new(StatusCode::Ok);
-    Ok(response)
-}
-
-fn handle_serde_error(error: serde_json::Error) -> tide::Error {
-    info!("serialization error {}", error.to_string());
+fn handle_request_error(err_code: &str, message: String) -> tide::Error {
     let error_response = ErrorResponse {
-        code: "002".to_string(),
-        message: error.to_string(),
-    };
-
-    //TODO do not unwrap use match
-    tide::Error::from_str(
-        StatusCode::InternalServerError,
-        serde_json::to_string(&error_response).unwrap(),
-    )
-}
-
-fn handle_request_error(message: &str) -> tide::Error {
-    let error_response = ErrorResponse {
-        code: "001".to_string(),
+        code: err_code.to_string(),
         message: message.to_string(),
     };
 
