@@ -1,3 +1,7 @@
+mod premium_tests;
+
+use anyhow::Context;
+use chrono::{Datelike, Local, NaiveDate};
 use log::info;
 use serde::{Deserialize, Serialize};
 use tide::{Body, Request, Response, StatusCode};
@@ -30,14 +34,14 @@ async fn main() -> tide::Result<()> {
         .init();
 
     let mut app = tide::new();
-    app.at("/").get(health);
+    app.at("/").get(healthz);
     app.at("/api/v1/healths/premiums").post(premiums);
     let _listener = app.listen("127.0.0.1:8000").await?;
     info!("premium api started");
     Ok(())
 }
 
-async fn health(_req: Request<()>) -> tide::Result {
+async fn healthz(_req: Request<()>) -> tide::Result {
     let response = Response::new(StatusCode::Ok);
     Ok(response)
 }
@@ -50,7 +54,8 @@ async fn premiums(mut req: Request<()>) -> tide::Result {
     match result {
         Ok(data) => {
             info!("{:?}", data);
-            Ok(process_premium_response(data).await)
+            let health_response = process_premium_response(data).await?;
+            Ok(make_response(&health_response))
         }
         Err(err) => {
             info!("{:?}", err);
@@ -62,13 +67,36 @@ async fn premiums(mut req: Request<()>) -> tide::Result {
     }
 }
 
-async fn process_premium_response(input: HealthRequest) -> Response {
+async fn process_premium_response(input: HealthRequest) -> anyhow::Result<HealthResponse> {
+    //TODO calculate premium
+
+    let age = calculate_age(&input.date_of_birth)?;
+
     let response = HealthResponse {
         premium: "250".to_string(),
     };
+    Ok(response)
+}
 
-    //TODO calculate premium
-    make_response(&response)
+fn calculate_age(dob_str: &String) -> anyhow::Result<i32> {
+    let result = NaiveDate::parse_from_str(dob_str, "%Y-%m-%d");
+
+    match result {
+        Ok(date) => {
+            let current_year = Local::now();
+            let mut years = current_year.year() - date.year();
+            if current_year.day() < date.day() {
+                years -= 1;
+            }
+            info!("years calculated {:?}", years);
+            Ok(years)
+        }
+        Err(_) => Ok(0),
+    }
+}
+
+fn calculate_score(age: u32) -> anyhow::Result<u32> {
+    Ok(12)
 }
 
 fn make_json_error_response(err_code: &str, message: String) -> Response {
@@ -76,7 +104,6 @@ fn make_json_error_response(err_code: &str, message: String) -> Response {
         code: err_code.to_string(),
         message: message.to_string(),
     };
-
     make_response(&err)
 }
 
@@ -90,7 +117,7 @@ fn make_response<T: Serialize>(response: &T) -> Response {
         }
         Err(err) => {
             info!("Error while converting response {:?}", err);
-            Response::new(tide::StatusCode::InternalServerError)
+            Response::new(StatusCode::InternalServerError)
         }
     }
 }
