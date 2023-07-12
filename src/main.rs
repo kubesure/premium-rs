@@ -1,8 +1,9 @@
 mod premium_tests;
 
-use anyhow::Context;
+use anyhow::{Context, Error};
 use chrono::{Datelike, Local, NaiveDate};
-use log::info;
+use log::{error, info};
+use redis::{Commands, Connection, RedisError, RedisResult};
 use serde::{Deserialize, Serialize};
 use tide::{Body, Request, Response, StatusCode};
 
@@ -54,31 +55,81 @@ async fn premiums(mut req: Request<()>) -> tide::Result {
     match result {
         Ok(data) => {
             info!("{:?}", data);
-            let health_response = process_premium_response(data).await?;
-            Ok(make_response(&health_response))
+            let health_response = process_premium_response(data).await;
+            match health_response {
+                Ok(data) => Ok(make_response(&data)),
+                Err(_err) => {
+                    //TODO fix this error response
+                    let err_response =
+                        make_json_error_response("002", "Internal Server Error".to_string());
+                    info!("err: {:?} sending error response", err_response);
+                    Ok(err_response)
+                }
+            }
         }
         Err(err) => {
-            info!("{:?}", err);
-            Ok(make_json_error_response(
-                "002",
-                "Internal Server Error".to_string(),
-            ))
+            let err_response = make_json_error_response("002", "Internal Server Error".to_string());
+            info!("err: {:?} sending error response", err_response);
+            Ok(err_response)
         }
     }
 }
 
 async fn process_premium_response(input: HealthRequest) -> anyhow::Result<HealthResponse> {
-    //TODO calculate premium
+    //TODO implement default
+    let mut response = HealthResponse {
+        premium: "0".to_string(),
+    };
 
     let age = calculate_age(&input.date_of_birth)?;
+    let score = calculate_score(age);
+    info!("score {}", score);
 
-    let response = HealthResponse {
-        premium: "250".to_string(),
-    };
-    Ok(response)
+    let redis_result = redis_premium(input, score).await;
+
+    match redis_result {
+        Ok(values) => {
+            for premium in values {
+                info!("premium is {}", premium);
+                response = HealthResponse { premium };
+            }
+            Ok(response)
+        }
+        Err(err) => {
+            //TODO log error
+            error!("{}", err.to_string());
+            Err(err)
+        }
+    }
 }
 
-fn calculate_age(dob_str: &String) -> anyhow::Result<i32> {
+async fn redis_premium(input: HealthRequest, score: u32) -> anyhow::Result<Vec<String>> {
+    let mut conn = conn_read().await?;
+
+    let key = input.code + ":" + input.sum_insured.as_str();
+    info!("key {} score {}", key, score);
+    let result: RedisResult<Vec<String>> = conn.zrangebyscore(key, score, score);
+    match result {
+        Ok(values) => {
+            info!("value length {}", values.len());
+            if values.len() > 1 {
+                let message: String =
+                    String::from("redis has more than two values for sum assumes and score");
+                let err = Error::msg(message).context("102".to_string());
+                //TODO may not be correct
+                return Err(err);
+            }
+            Ok(values)
+        }
+        Err(_err) => {
+            let message: String = String::from(err.to_string());
+            let err = Error::msg(message).context("101".to_string());
+            Err(err)
+        }
+    }
+}
+
+fn calculate_age(dob_str: &String) -> anyhow::Result<u32> {
     let result = NaiveDate::parse_from_str(dob_str, "%Y-%m-%d");
 
     match result {
@@ -89,14 +140,41 @@ fn calculate_age(dob_str: &String) -> anyhow::Result<i32> {
                 years -= 1;
             }
             info!("years calculated {:?}", years);
-            Ok(years)
+            Ok(years.try_into().unwrap_or(0))
         }
         Err(_) => Ok(0),
     }
 }
 
-fn calculate_score(age: u32) -> anyhow::Result<u32> {
-    Ok(12)
+fn calculate_score(age: u32) -> u32 {
+    if age >= 18 && age <= 35 {
+        return 1;
+    } else if age >= 36 && age <= 45 {
+        return 2;
+    } else if age >= 46 && age <= 55 {
+        return 3;
+    } else if age >= 56 && age <= 60 {
+        return 4;
+    } else if age >= 61 && age <= 65 {
+        return 5;
+    } else if age >= 66 && age <= 70 {
+        return 6;
+    } else if age > 70 {
+        return 7;
+    }
+    0
+}
+
+async fn conn_read() -> anyhow::Result<Connection, RedisError> {
+    let client = redis::Client::open("redis://localhost:6379");
+
+    match client {
+        Ok(client) => {
+            let conn = client.get_connection();
+            Ok(conn?)
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn make_json_error_response(err_code: &str, message: String) -> Response {

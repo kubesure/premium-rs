@@ -3,7 +3,7 @@ mod tests {
     use crate::calculate_age;
 
     #[test]
-    fn test_my_function() {
+    fn test_calculate_age() {
         // Test case logic
         let dob_str = String::from("1977-09-14");
         let result = calculate_age(&dob_str);
