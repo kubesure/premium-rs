@@ -1,10 +1,8 @@
-mod premium_tests;
-
-use anyhow::{Context, Error};
 use chrono::{Datelike, Local, NaiveDate};
 use log::{error, info};
 use redis::{Commands, Connection, RedisError, RedisResult};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tide::{Body, Request, Response, StatusCode};
 
 #[derive(Debug, Deserialize)]
@@ -25,6 +23,19 @@ struct HealthResponse {
 struct ErrorResponse {
     code: String,
     message: String,
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+enum PremiumError {
+    #[error("Internal server error")]
+    InternalServer,
+    #[error("Invalid request")]
+    InvalidInput,
+    #[error("Invalid header: {0}")]
+    InvalidHeader(String),
+    #[error("Cannot calculate risk for input")]
+    RiskCalculation,
 }
 
 #[async_std::main]
@@ -48,88 +59,110 @@ async fn healthz(_req: Request<()>) -> tide::Result {
 }
 
 async fn premiums(mut req: Request<()>) -> tide::Result {
-    validate_request(&req).await?;
-    let input = req.body_string().await?;
-    let result = serde_json::from_str::<HealthRequest>(input.as_str());
+    let request: HealthRequest;
+    match validate_parse_request(&mut req).await {
+        Ok(result) => request = result,
+        Err(err) => return Ok(handle_error(err)),
+    };
 
-    match result {
-        Ok(data) => {
-            info!("{:?}", data);
-            let health_response = process_premium_response(data).await;
-            match health_response {
-                Ok(data) => Ok(make_response(&data)),
-                Err(_err) => {
-                    //TODO fix this error response
-                    let err_response =
-                        make_json_error_response("002", "Internal Server Error".to_string());
-                    info!("err: {:?} sending error response", err_response);
-                    Ok(err_response)
-                }
-            }
+    let health_response = calculate_premium(request).await;
+    match health_response {
+        Ok(premium) => {
+            let response: HealthResponse = HealthResponse { premium };
+            Ok(make_response(&response)?)
         }
-        Err(err) => {
-            let err_response = make_json_error_response("002", "Internal Server Error".to_string());
-            info!("err: {:?} sending error response", err_response);
-            Ok(err_response)
+        Err(err) => Ok(handle_error(err)),
+    }
+}
+
+fn handle_error(err: PremiumError) -> Response {
+    match err {
+        PremiumError::InternalServer => match make_json_error_response("001", err.to_string()) {
+            Ok(response) => response,
+            Err(_) => Response::new(StatusCode::InternalServerError),
+        },
+        PremiumError::InvalidInput => match make_json_error_response("002", err.to_string()) {
+            Ok(response) => response,
+            Err(_) => Response::new(StatusCode::InternalServerError),
+        },
+
+        PremiumError::RiskCalculation => match make_json_error_response("004", err.to_string()) {
+            Ok(response) => response,
+            Err(_) => Response::new(StatusCode::InternalServerError),
+        },
+        PremiumError::InvalidHeader(header) => {
+            match make_json_error_response(
+                "003",
+                format!("Header {} not provided or invalid", header),
+            ) {
+                Ok(response) => response,
+                Err(_) => Response::new(StatusCode::InternalServerError),
+            }
         }
     }
 }
 
-async fn process_premium_response(input: HealthRequest) -> anyhow::Result<HealthResponse> {
-    //TODO implement default
-    let mut response = HealthResponse {
-        premium: "0".to_string(),
-    };
+async fn validate_parse_request(
+    req: &mut Request<()>,
+) -> anyhow::Result<HealthRequest, PremiumError> {
+    validate_request(&req)?;
+    let body = body_string(req).await?;
+    let result = serde_json::from_str::<HealthRequest>(body.as_str());
+    match result {
+        Ok(request) => Ok(request),
+        Err(err) => {
+            error!(
+                "Serialization error while converting json to struct {}",
+                err.to_string()
+            );
+            Err(PremiumError::InvalidInput)
+        }
+    }
+}
+fn validate_request(request: &Request<()>) -> anyhow::Result<Response, PremiumError> {
+    validate_headers(request)
+}
 
-    let age = calculate_age(&input.date_of_birth)?;
+fn validate_headers(request: &Request<()>) -> anyhow::Result<Response, PremiumError> {
+    let content_type = request.header("Content-Type").map(|header| header.as_str());
+    match content_type {
+        Some("application/json") => Ok(Response::new(StatusCode::Ok)),
+        _ => Err(PremiumError::InvalidHeader("content-type".to_string())),
+    }
+}
+
+async fn body_string(req: &mut Request<()>) -> anyhow::Result<String, PremiumError> {
+    let body_result = req.body_string().await;
+    match body_result {
+        Ok(body) => Ok(body),
+        Err(err) => {
+            error!("Parsing error of request body {}", err.to_string());
+            Err(PremiumError::InternalServer)
+        }
+    }
+}
+
+async fn calculate_premium(input: HealthRequest) -> anyhow::Result<String, PremiumError> {
+    let mut premium: String = "0".to_string();
+    let age = calculate_age(&input.date_of_birth);
     let score = calculate_score(age);
-    info!("score {}", score);
+    info!("age {} score {}", score, age);
 
     let redis_result = redis_premium(input, score).await;
 
     match redis_result {
         Ok(values) => {
-            for premium in values {
-                info!("premium is {}", premium);
-                response = HealthResponse { premium };
+            for value in values {
+                premium = value;
             }
-            Ok(response)
+            info!("premium {}", premium);
+            Ok(premium)
         }
-        Err(err) => {
-            //TODO log error
-            error!("{}", err.to_string());
-            Err(err)
-        }
+        Err(err) => Err(err),
     }
 }
 
-async fn redis_premium(input: HealthRequest, score: u32) -> anyhow::Result<Vec<String>> {
-    let mut conn = conn_read().await?;
-
-    let key = input.code + ":" + input.sum_insured.as_str();
-    info!("key {} score {}", key, score);
-    let result: RedisResult<Vec<String>> = conn.zrangebyscore(key, score, score);
-    match result {
-        Ok(values) => {
-            info!("value length {}", values.len());
-            if values.len() > 1 {
-                let message: String =
-                    String::from("redis has more than two values for sum assumes and score");
-                let err = Error::msg(message).context("102".to_string());
-                //TODO may not be correct
-                return Err(err);
-            }
-            Ok(values)
-        }
-        Err(_err) => {
-            let message: String = String::from(err.to_string());
-            let err = Error::msg(message).context("101".to_string());
-            Err(err)
-        }
-    }
-}
-
-fn calculate_age(dob_str: &String) -> anyhow::Result<u32> {
+fn calculate_age(dob_str: &String) -> i32 {
     let result = NaiveDate::parse_from_str(dob_str, "%Y-%m-%d");
 
     match result {
@@ -140,13 +173,13 @@ fn calculate_age(dob_str: &String) -> anyhow::Result<u32> {
                 years -= 1;
             }
             info!("years calculated {:?}", years);
-            Ok(years.try_into().unwrap_or(0))
+            years
         }
-        Err(_) => Ok(0),
+        Err(_) => 0,
     }
 }
 
-fn calculate_score(age: u32) -> u32 {
+fn calculate_score(age: i32) -> i32 {
     if age >= 18 && age <= 35 {
         return 1;
     } else if age >= 36 && age <= 45 {
@@ -165,6 +198,35 @@ fn calculate_score(age: u32) -> u32 {
     0
 }
 
+async fn redis_premium(
+    input: HealthRequest,
+    score: i32,
+) -> anyhow::Result<Vec<String>, PremiumError> {
+    let mut conn = match conn_read().await {
+        Ok(connection) => connection,
+        Err(err) => {
+            error!("Redis error while getting connection {}", err.to_string());
+            return Err(PremiumError::InternalServer);
+        }
+    };
+
+    let key = input.code + ":" + input.sum_insured.as_str();
+    let result: RedisResult<Vec<String>> = conn.zrangebyscore(key, score, score);
+    match result {
+        Ok(values) => {
+            if values.len() > 1 {
+                error!("redis has more than two values for sum assumes and score");
+                return Err(PremiumError::RiskCalculation);
+            }
+            Ok(values)
+        }
+        Err(err) => {
+            error!("Redis error while getting score {}", err.to_string());
+            Err(PremiumError::InternalServer)
+        }
+    }
+}
+
 async fn conn_read() -> anyhow::Result<Connection, RedisError> {
     let client = redis::Client::open("redis://localhost:6379");
 
@@ -173,11 +235,14 @@ async fn conn_read() -> anyhow::Result<Connection, RedisError> {
             let conn = client.get_connection();
             Ok(conn?)
         }
-        Err(err) => Err(err),
+        Err(err) => {
+            error!("Redis erorr {}", err.to_string());
+            Err(err)
+        }
     }
 }
 
-fn make_json_error_response(err_code: &str, message: String) -> Response {
+fn make_json_error_response(err_code: &str, message: String) -> tide::Result {
     let err = ErrorResponse {
         code: err_code.to_string(),
         message: message.to_string(),
@@ -185,39 +250,48 @@ fn make_json_error_response(err_code: &str, message: String) -> Response {
     make_response(&err)
 }
 
-fn make_response<T: Serialize>(response: &T) -> Response {
+fn make_response<T: Serialize>(response: &T) -> tide::Result {
     let data = Body::from_json(&response);
     match data {
         Ok(data) => {
             let mut response = Response::new(StatusCode::Ok);
             response.set_body(data);
-            response
+            Ok(response)
         }
         Err(err) => {
             info!("Error while converting response {:?}", err);
-            Response::new(StatusCode::InternalServerError)
+            Err(tide::Error::from_str(
+                StatusCode::InternalServerError,
+                "Internal server error",
+            ))
         }
     }
 }
 
-async fn validate_request(request: &Request<()>) -> tide::Result {
-    let content_type = request.header("Content-Type").map(|header| header.as_str());
-    match content_type {
-        Some("application/json") => Ok(Response::new(StatusCode::Ok)),
-        _ => {
-            Err(handle_request_error("001", "content type not application/json".to_string()).await)
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_std::task;
+
+    #[test]
+    fn test_calculate_age() {
+        let dob_str = String::from("1977-09-14");
+        let age = calculate_age(&dob_str);
+        assert_eq!(age, 46, "want value 45 got {}", age);
     }
-}
 
-async fn handle_request_error(err_code: &str, message: String) -> tide::Error {
-    let error_response = ErrorResponse {
-        code: err_code.to_string(),
-        message: message.to_string(),
-    };
+    #[test]
+    fn test_calculate_premium() {
+        let request: HealthRequest = HealthRequest {
+            code: "1A".to_string(),
+            sum_insured: "100000".to_string(),
+            date_of_birth: "1977-09-14".to_string(),
+        };
 
-    tide::Error::from_str(
-        StatusCode::BadRequest,
-        serde_json::to_string(&error_response).unwrap_or("Error".to_string()),
-    )
+        task::block_on(async {
+            let premium = calculate_premium(request).await;
+            assert!(premium.is_ok());
+            assert_eq!(premium.unwrap(), "750".to_string());
+        });
+    }
 }
