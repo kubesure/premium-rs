@@ -18,7 +18,4 @@ Cargo.lock
 
 /target
 scrap
-.idea/premium-rs.iml
-.idea/vcs.xml
-.idea/modules.xml
-.idea/misc.xml
+
