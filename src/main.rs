@@ -14,6 +14,10 @@ async fn main() -> tide::Result<()> {
     let mut app = tide::new();
     app.at("/").get(healthz);
     app.at("/api/v1/healths/premiums").post(premiums);
+    app.at("/api/v1/healths/premiums/loads").post(load_matrix);
+    app.at("/api/v1/healths/premiums/unloads")
+        .post(unload_matrix);
+    app.at("/api/v1/healths/premiums/checks").get(check_matrix);
     let _listener = app.listen("127.0.0.1:8000").await?;
     info!("premium api started");
     Ok(())
@@ -39,6 +43,18 @@ async fn premiums(mut req: Request<()>) -> tide::Result {
         }
         Err(err) => Ok(handle_error(err)),
     }
+}
+
+async fn load_matrix(mut req: Request<()>) -> tide::Result {
+    Ok(Response::new(StatusCode::InternalServerError))
+}
+
+async fn unload_matrix(mut req: Request<()>) -> tide::Result {
+    Ok(Response::new(StatusCode::InternalServerError))
+}
+
+async fn check_matrix(mut req: Request<()>) -> tide::Result {
+    Ok(Response::new(StatusCode::InternalServerError))
 }
 
 fn handle_error(err: PremiumError) -> Response {
