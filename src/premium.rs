@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use calamine::{open_workbook_auto, Reader, Xlsx};
+use calamine::{open_workbook_auto, Reader};
 use chrono::{Datelike, Local, NaiveDate};
 use log::{error, info};
 use redis::{Commands, Connection, RedisError, RedisResult};
@@ -113,7 +113,7 @@ async fn redis_premium(
     drop(conn);
     match result {
         Ok(values) => {
-            if values.len() > 1 {
+            if values.len() != 1 {
                 error!("redis has more than two values for sum assumes and score");
                 return Err(PremiumError::RiskCalculation);
             }
@@ -126,26 +126,81 @@ async fn redis_premium(
     }
 }
 
-pub fn load() -> anyhow::Result<bool, PremiumError> {
+pub async fn load() -> anyhow::Result<bool, PremiumError> {
+    let premium_table = load_excel_data().await?;
+    let mut conn = conn_read().await?;
+
+    for i in 0..premium_table.len() {
+        let mut premium: i32 = 0;
+        let mut score: i32 = 0;
+        let mut key: String = "".to_string();
+
+        for j in 0..premium_table[i].len() {
+            if j == 0 {
+                key = premium_table[i][j].to_string();
+            } else if j == 1 {
+                match premium_table[i][j].parse::<i32>() {
+                    Ok(number) => premium = number,
+                    Err(_err) => return Err(PremiumError::InternalServer),
+                }
+            } else if j == 2 {
+                match premium_table[i][j].parse::<i32>() {
+                    Ok(number) => score = number,
+                    Err(_err) => return Err(PremiumError::InternalServer),
+                }
+            }
+        }
+        let result: Result<(), RedisError> = conn.zadd(key, premium, score);
+        match result {
+            Ok(_) => {}
+            Err(_) => return Err(PremiumError::InternalServer),
+        }
+    }
+    Ok(true)
+}
+
+//
+async fn load_excel_data() -> anyhow::Result<Vec<Vec<String>>, PremiumError> {
     let path = "./premium_tables.xlsx";
     let mut work_book = match open_workbook_auto(Path::new(path)) {
         Ok(book) => book,
         Err(_) => return Err(PremiumError::InternalServer),
     };
 
-    let result = work_book.worksheet_range("matrix");
+    if let Some(Ok(range)) = work_book.worksheet_range("matrix") {
+        let mut score = 0;
 
-    Ok(true)
+        let mut premim_table: Vec<Vec<String>> = Vec::with_capacity(3);
+        for row in range.rows() {
+            let mut key = "".to_string();
+            score += 1;
+            let mut premium_row: Vec<String> = Vec::with_capacity(3);
+            for (index, value) in row.iter().enumerate() {
+                if index == 0 {
+                    key = value.to_string();
+                }
+
+                if index == 1 {
+                    let colon = String::from(":");
+                    key = key + &colon + &value.to_string();
+                    premium_row.push(key.to_string());
+                }
+
+                if index == 3 {
+                    premium_row.push(value.to_string());
+                }
+            }
+            premium_row.push(score.to_string());
+            premim_table.push(premium_row);
+        }
+        Ok(premim_table)
+    } else {
+        Err(PremiumError::RiskCalculation)
+    }
 }
 
 pub async fn keys_exists() -> anyhow::Result<bool, PremiumError> {
-    let mut conn = match conn_read().await {
-        Ok(connection) => connection,
-        Err(err) => {
-            error!("Redis error while getting connection {}", err.to_string());
-            return Err(PremiumError::InternalServer);
-        }
-    };
+    let mut conn = conn_read().await?;
 
     let result: Result<Vec<String>, RedisError> = conn.keys("*".to_string());
     drop(conn);
@@ -161,14 +216,8 @@ pub async fn keys_exists() -> anyhow::Result<bool, PremiumError> {
     }
 }
 
-async fn unload() -> anyhow::Result<bool, PremiumError> {
-    let mut conn = match conn_read().await {
-        Ok(connection) => connection,
-        Err(err) => {
-            error!("Redis error while getting connection {}", err.to_string());
-            return Err(PremiumError::InternalServer);
-        }
-    };
+pub async fn unload() -> anyhow::Result<bool, PremiumError> {
+    let mut conn = conn_read().await?;
 
     let result: Result<(), RedisError> = redis::cmd("FLUSHALL").query(&mut conn);
     drop(conn);
@@ -178,17 +227,23 @@ async fn unload() -> anyhow::Result<bool, PremiumError> {
     }
 }
 
-async fn conn_read() -> anyhow::Result<Connection, RedisError> {
+async fn conn_read() -> anyhow::Result<Connection, PremiumError> {
     let client = redis::Client::open("redis://localhost:6379");
 
     match client {
         Ok(client) => {
             let conn = client.get_connection();
-            Ok(conn?)
+            match conn {
+                Ok(conn) => Ok(conn),
+                Err(err) => {
+                    error!("Redis connection error {}", err.to_string());
+                    Err(PremiumError::InternalServer)
+                }
+            }
         }
         Err(err) => {
-            error!("Redis erorr {}", err.to_string());
-            Err(err)
+            error!("Redis client opening error {}", err.to_string());
+            Err(PremiumError::InternalServer)
         }
     }
 }
@@ -224,6 +279,24 @@ mod tests {
     fn test_key_exists() {
         task::block_on(async {
             let result = keys_exists().await;
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), true);
+        });
+    }
+
+    #[test]
+    fn test_load() {
+        task::block_on(async {
+            let result = load().await;
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), true);
+        });
+    }
+
+    #[test]
+    fn test_unload() {
+        task::block_on(async {
+            let result = unload().await;
             assert!(result.is_ok());
             assert_eq!(result.unwrap(), true);
         });

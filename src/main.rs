@@ -45,16 +45,28 @@ async fn premiums(mut req: Request<()>) -> tide::Result {
     }
 }
 
-async fn load_matrix(mut req: Request<()>) -> tide::Result {
-    Ok(Response::new(StatusCode::InternalServerError))
+async fn load_matrix(_req: Request<()>) -> tide::Result {
+    let result = load().await;
+    match result {
+        Ok(_) => Ok(Response::new(StatusCode::Ok)),
+        Err(err) => Ok(handle_error(err)),
+    }
 }
 
-async fn unload_matrix(mut req: Request<()>) -> tide::Result {
-    Ok(Response::new(StatusCode::InternalServerError))
+async fn unload_matrix(_req: Request<()>) -> tide::Result {
+    let result = unload().await;
+    match result {
+        Ok(_) => Ok(Response::new(StatusCode::Ok)),
+        Err(err) => Ok(handle_error(err)),
+    }
 }
 
-async fn check_matrix(mut req: Request<()>) -> tide::Result {
-    Ok(Response::new(StatusCode::InternalServerError))
+async fn check_matrix(_req: Request<()>) -> tide::Result {
+    let result = keys_exists().await;
+    match result {
+        Ok(_) => Ok(Response::new(StatusCode::Ok)),
+        Err(err) => Ok(handle_error(err)),
+    }
 }
 
 fn handle_error(err: PremiumError) -> Response {
