@@ -41,7 +41,6 @@ pub enum PremiumError {
 }
 
 pub async fn calculate_premium(input: HealthRequest) -> anyhow::Result<String, PremiumError> {
-    let mut premium: String = "0".to_string();
     let age = calculate_age(&input.date_of_birth);
     let score = calculate_score(age);
     info!("age {} score {}", score, age);
@@ -49,13 +48,7 @@ pub async fn calculate_premium(input: HealthRequest) -> anyhow::Result<String, P
     let redis_result = redis_premium(input, score).await;
 
     match redis_result {
-        Ok(values) => {
-            for value in values {
-                premium = value;
-            }
-            info!("premium {}", premium);
-            Ok(premium)
-        }
+        Ok(values) => Ok(values[0].to_string()),
         Err(err) => Err(err),
     }
 }
@@ -100,13 +93,7 @@ async fn redis_premium(
     input: HealthRequest,
     score: i32,
 ) -> anyhow::Result<Vec<String>, PremiumError> {
-    let mut conn = match conn_read().await {
-        Ok(connection) => connection,
-        Err(err) => {
-            error!("Redis error while getting connection {}", err.to_string());
-            return Err(PremiumError::InternalServer);
-        }
-    };
+    let mut conn = conn_read().await?;
 
     let key = input.code + ":" + input.sum_insured.as_str();
     let result: RedisResult<Vec<String>> = conn.zrangebyscore(key, score, score);
@@ -212,7 +199,10 @@ pub async fn keys_exists() -> anyhow::Result<bool, PremiumError> {
                 Ok(false)
             }
         }
-        Err(_) => Err(PremiumError::InternalServer),
+        Err(err) => {
+            error!("Redis error while fetching keys{}", err.to_string());
+            Err(PremiumError::InternalServer)
+        }
     }
 }
 
@@ -223,7 +213,25 @@ pub async fn unload() -> anyhow::Result<bool, PremiumError> {
     drop(conn);
     match result {
         Ok(_) => Ok(true),
-        Err(_) => Err(PremiumError::InternalServer),
+        Err(err) => {
+            error!(
+                "Redis error while executing command FLUSHALL{}",
+                err.to_string()
+            );
+            Err(PremiumError::InternalServer)
+        }
+    }
+}
+
+impl From<String> for HealthResponse {
+    fn from(value: String) -> Self {
+        HealthResponse { premium: value }
+    }
+}
+
+impl Into<String> for HealthResponse {
+    fn into(self) -> String {
+        self.premium
     }
 }
 

@@ -37,10 +37,7 @@ async fn premiums(mut req: Request<()>) -> tide::Result {
 
     let health_response = calculate_premium(request).await;
     match health_response {
-        Ok(premium) => {
-            let response: HealthResponse = HealthResponse { premium };
-            Ok(make_response(&response)?)
-        }
+        Ok(premium) => Ok(make_response::<HealthResponse>(&premium.into())?),
         Err(err) => Ok(handle_error(err)),
     }
 }
