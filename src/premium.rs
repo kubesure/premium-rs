@@ -1,3 +1,4 @@
+use std::env;
 use std::path::Path;
 
 use calamine::{open_workbook_auto, Reader};
@@ -235,8 +236,23 @@ impl Into<String> for HealthResponse {
     }
 }
 
+async fn redis_svc() -> anyhow::Result<String, PremiumError> {
+    let result = env::var("redissvc");
+    match result {
+        Ok(value) => Ok(value),
+        Err(_) => {
+            error!("Error while getting redis service from variable");
+            Err(PremiumError::InternalServer)
+        }
+    }
+}
+
+//TODO fix to use read and write as diffrent connections
 async fn conn_read() -> anyhow::Result<Connection, PremiumError> {
-    let client = redis::Client::open("redis://localhost:6379");
+    //TODO fix to load to static from variable
+    let redis_svc = format!("redis://{}:6379", redis_svc().await?);
+    info!("redis connection string {}", redis_svc);
+    let client = redis::Client::open(redis_svc);
 
     match client {
         Ok(client) => {
