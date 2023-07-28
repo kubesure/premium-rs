@@ -15,21 +15,21 @@ BINARY_UNIX=$(BINARY_NAME)
 TAG_LOCAL = $(BINARY_NAME):$(BINARY_VERSION)
 TAG_HUB = bikertales/$(BINARY_NAME):$(BINARY_VERSION)
 
-.PHONY: build # - Builds linux arch go binary
+.PHONY: build # - Builds linux arch binary
 build:
-	$(GOBUILD)
+	$(BUILD)
 
 .PHONY: install  # - Installs go service 
 install:
-	$(GOBUILD) -o $(BINARY_UNIX) -v ./...
+	$(INSTALL)
 
 .PHONY: run # - Runs the service
 run:
-	$(GORUN) health.go
+	$(RUN)
 
 .PHONY: dbuild  # - Builds docker image
 dbuild: build
-	$(DBUILD) . -t $(TAG_LOCAL)
+	$(DBUILD) --platform linux/amd64 . -t $(TAG_LOCAL)
 
 .PHONY: dtag # - Tags local image to docker hub tag
 dtag: dbuild
@@ -42,6 +42,4 @@ dpush: dtag
 .PHONY: tasks
 tasks:
 	@grep '^.PHONY: .* #' Makefile | sed 's/\.PHONY: \(.*\) # \(.*\)/\1 \2/' | expand -t20
-
-
 

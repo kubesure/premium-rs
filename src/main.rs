@@ -18,8 +18,8 @@ async fn main() -> tide::Result<()> {
     app.at("/api/v1/healths/premiums/unloads")
         .post(unload_matrix);
     app.at("/api/v1/healths/premiums/checks").get(check_matrix);
-    let _listener = app.listen("127.0.0.1:8000").await?;
     info!("premium api started");
+    let _listener = app.listen("127.0.0.1:8000").await?;
     Ok(())
 }
 
