@@ -11,15 +11,21 @@ async fn main() -> tide::Result<()> {
         .format_module_path(false)
         .init();
 
+    let address = std::env::var("LISTEN_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let port = std::env::var("LISTEN_PORT").expect("LISTEN_PORT env var is required");
+    let listen = format!("{}:{}", address, port);
+
     let mut app = tide::new();
+
     app.at("/").get(healthz);
     app.at("/api/v1/healths/premiums").post(premiums);
     app.at("/api/v1/healths/premiums/loads").post(load_matrix);
     app.at("/api/v1/healths/premiums/unloads")
         .post(unload_matrix);
     app.at("/api/v1/healths/premiums/checks").get(check_matrix);
-    info!("premium api started");
-    let _listener = app.listen("127.0.0.1:8000").await?;
+    info!("premium service started");
+
+    let _listener = app.listen(listen).await?;
     Ok(())
 }
 

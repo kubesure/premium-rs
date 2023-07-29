@@ -3,10 +3,12 @@ COPY . .
 RUN rustup target add aarch64-unknown-linux-musl
 RUN cargo build --target aarch64-unknown-linux-musl --release
 
-FROM debian:bullseye-slim
-RUN apt-get update
-RUN apt-get install net-tools
-RUN apt-get -y install curl
+FROM scratch
+#RUN apt-get update
+#RUN apt-get install net-tools
+#RUN apt-get -y install curl
+ARG LISTEN_PORT=8000
+ENV LISTEN_PORT ${LISTEN_PORT}
 COPY --from=builder ./premium_tables.xlsx ./premium_tables.xlsx
 COPY --from=builder ./target/aarch64-unknown-linux-musl/release/premium-rs ./premium-rs
 CMD ["./premium-rs"]
