@@ -101,8 +101,8 @@ async fn redis_premium(
     drop(conn);
     match result {
         Ok(values) => {
-            if values.len() != 1 {
-                error!("redis has more than two values for sum assumes and score");
+            if values.len() == 0 {
+                error!("redis has more than two values or no values for sum assumed and score");
                 return Err(PremiumError::RiskCalculation);
             }
             Ok(values)
@@ -183,7 +183,7 @@ async fn load_excel_data() -> anyhow::Result<Vec<Vec<String>>, PremiumError> {
         }
         Ok(premim_table)
     } else {
-        Err(PremiumError::RiskCalculation)
+        Err(PremiumError::InternalServer)
     }
 }
 
@@ -197,7 +197,7 @@ pub async fn keys_exists() -> anyhow::Result<bool, PremiumError> {
             if keys.len() > 0 {
                 Ok(true)
             } else {
-                Ok(false)
+                return Err(PremiumError::InternalServer);
             }
         }
         Err(err) => {
