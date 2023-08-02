@@ -76,14 +76,14 @@ fn handle_error(err: PremiumError) -> Response {
     match err {
         PremiumError::InternalServer => match make_json_error_response("001", err.to_string()) {
             Ok(mut response) => {
-                response.set_status(StatusCode::BadRequest);
+                response.set_status(StatusCode::InternalServerError);
                 response
             }
             Err(_) => Response::new(StatusCode::InternalServerError),
         },
         PremiumError::InvalidInput => match make_json_error_response("002", err.to_string()) {
             Ok(mut response) => {
-                response.set_status(StatusCode::InternalServerError);
+                response.set_status(StatusCode::BadRequest);
                 response
             }
             Err(_) => Response::new(StatusCode::InternalServerError),

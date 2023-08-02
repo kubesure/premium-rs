@@ -3,7 +3,7 @@ use std::path::Path;
 
 use calamine::{open_workbook_auto, Reader};
 use chrono::{Datelike, Local, NaiveDate};
-use log::{error, info};
+use log::error;
 use redis::{Commands, Connection, RedisError, RedisResult};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -44,7 +44,7 @@ pub enum PremiumError {
 pub async fn calculate_premium(input: HealthRequest) -> anyhow::Result<String, PremiumError> {
     let age = calculate_age(&input.date_of_birth);
     let score = calculate_score(age);
-    info!("age {} score {}", score, age);
+    //info!("age {} score {}", score, age);
 
     let redis_result = redis_premium(input, score).await;
 
@@ -64,7 +64,6 @@ fn calculate_age(dob_str: &String) -> i32 {
             if current_year.day() < date.day() {
                 years -= 1;
             }
-            info!("years calculated {:?}", years);
             years
         }
         Err(_) => 0,
@@ -116,7 +115,7 @@ async fn redis_premium(
 
 pub async fn load() -> anyhow::Result<bool, PremiumError> {
     let premium_table = load_excel_data().await?;
-    let mut conn = conn_read().await?;
+    let mut conn = conn_write().await?;
 
     for i in 0..premium_table.len() {
         let mut premium: i32 = 0;
@@ -208,7 +207,7 @@ pub async fn keys_exists() -> anyhow::Result<bool, PremiumError> {
 }
 
 pub async fn unload() -> anyhow::Result<bool, PremiumError> {
-    let mut conn = conn_read().await?;
+    let mut conn = conn_write().await?;
 
     let result: Result<(), RedisError> = redis::cmd("FLUSHALL").query(&mut conn);
     drop(conn);
@@ -236,24 +235,40 @@ impl Into<String> for HealthResponse {
     }
 }
 
-async fn redis_svc() -> anyhow::Result<String, PremiumError> {
-    let result = env::var("redissvc");
+async fn conn_read() -> anyhow::Result<Connection, PremiumError> {
+    let redis_svc = format!("redis://{}:6380", redis_svc().await?);
+    let client = redis::Client::open(redis_svc);
+    get_connection(client)
+}
+
+async fn conn_write() -> anyhow::Result<Connection, PremiumError> {
+    let svc_name = redis_svc().await?;
+    let sen_svc_query_str = format!("redis://{}:26379/0", svc_name);
+    let client = redis::Client::open(sen_svc_query_str);
+
+    let mut sentinal_conn = get_connection(client)?;
+    let result: RedisResult<Vec<String>> = redis::cmd("sentinel")
+        .arg("get-master-addr-by-name")
+        .arg("redis-premium-master")
+        .query(&mut sentinal_conn);
+
     match result {
-        Ok(value) => Ok(value),
-        Err(_) => {
-            error!("Error while getting redis service from variable");
-            Err(PremiumError::InternalServer)
+        Ok(values) => {
+            let mstr_svc_query_str = format!("redis://{}:{}", values[0], values[1]);
+            let client = redis::Client::open(mstr_svc_query_str);
+            Ok(get_connection(client)?)
+        }
+        Err(err) => {
+            error!(
+                "Error while getting redis master connection {}",
+                err.to_string()
+            );
+            return Err(PremiumError::InternalServer);
         }
     }
 }
 
-//TODO fix to use read and write as diffrent connections
-async fn conn_read() -> anyhow::Result<Connection, PremiumError> {
-    //TODO fix to load to static from variable
-    let redis_svc = format!("redis://{}:6379", redis_svc().await?);
-    info!("redis connection string {}", redis_svc);
-    let client = redis::Client::open(redis_svc);
-
+fn get_connection(client: Result<redis::Client, RedisError>) -> Result<Connection, PremiumError> {
     match client {
         Ok(client) => {
             let conn = client.get_connection();
@@ -267,6 +282,17 @@ async fn conn_read() -> anyhow::Result<Connection, PremiumError> {
         }
         Err(err) => {
             error!("Redis client opening error {}", err.to_string());
+            Err(PremiumError::InternalServer)
+        }
+    }
+}
+
+async fn redis_svc() -> anyhow::Result<String, PremiumError> {
+    let result = env::var("redissvc");
+    match result {
+        Ok(value) => Ok(value),
+        Err(_) => {
+            error!("Error while getting redis service from variable");
             Err(PremiumError::InternalServer)
         }
     }
